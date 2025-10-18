@@ -11,6 +11,9 @@
 (define-constant err-time-expired (err u107))
 (define-constant err-min-difficulty (err u108))
 (define-constant err-max-solvers-reached (err u109))
+(define-constant err-hint-not-found (err u110))
+(define-constant err-insufficient-payment (err u111))
+(define-constant err-max-hints-reached (err u112))
 
 (define-data-var next-puzzle-id uint u1)
 (define-data-var next-nft-id uint u1)
@@ -47,6 +50,17 @@
 
 (define-map puzzle-leaderboard uint (list 50 principal))
 
+(define-map puzzle-hints { puzzle-id: uint, hint-level: uint } {
+  hint-text: (string-ascii 300),
+  cost: uint,
+  unlock-threshold: uint
+})
+
+(define-map user-hints-purchased { puzzle-id: uint, user: principal } {
+  hints-used: (list 10 uint),
+  total-spent: uint
+})
+
 (define-public (create-puzzle 
   (title (string-ascii 100))
   (description (string-ascii 500))
@@ -79,6 +93,43 @@
     (var-set next-puzzle-id (+ puzzle-id u1))
     (var-set total-puzzles-created (+ (var-get total-puzzles-created) u1))
     (ok puzzle-id)))
+
+(define-public (add-puzzle-hint
+  (puzzle-id uint)
+  (hint-level uint)
+  (hint-text (string-ascii 300))
+  (cost uint)
+  (unlock-threshold uint))
+  (let
+    ((puzzle-info (unwrap! (map-get? puzzles puzzle-id) err-not-found)))
+    (asserts! (is-eq tx-sender (get creator puzzle-info)) err-unauthorized)
+    (asserts! (<= hint-level u5) err-max-hints-reached)
+    (asserts! (> hint-level u0) err-hint-not-found)
+    (map-set puzzle-hints { puzzle-id: puzzle-id, hint-level: hint-level } {
+      hint-text: hint-text,
+      cost: cost,
+      unlock-threshold: unlock-threshold
+    })
+    (ok true)))
+
+(define-public (purchase-hint
+  (puzzle-id uint)
+  (hint-level uint))
+  (let
+    ((puzzle-info (unwrap! (map-get? puzzles puzzle-id) err-not-found))
+     (hint-info (unwrap! (map-get? puzzle-hints { puzzle-id: puzzle-id, hint-level: hint-level }) err-hint-not-found))
+     (user-hint-data (default-to { hints-used: (list), total-spent: u0 } 
+       (map-get? user-hints-purchased { puzzle-id: puzzle-id, user: tx-sender })))
+     (current-solvers (get current-solvers puzzle-info)))
+    (asserts! (get active puzzle-info) err-puzzle-inactive)
+    (asserts! (>= current-solvers (get unlock-threshold hint-info)) err-hint-not-found)
+    (asserts! (is-none (index-of (get hints-used user-hint-data) hint-level)) err-already-exists)
+    (try! (stx-transfer? (get cost hint-info) tx-sender (get creator puzzle-info)))
+    (map-set user-hints-purchased { puzzle-id: puzzle-id, user: tx-sender } {
+      hints-used: (unwrap! (as-max-len? (append (get hints-used user-hint-data) hint-level) u10) err-max-hints-reached),
+      total-spent: (+ (get total-spent user-hint-data) (get cost hint-info))
+    })
+    (ok (get hint-text hint-info))))
 
 (define-public (solve-puzzle 
   (puzzle-id uint)
@@ -214,3 +265,47 @@
       progress-percentage: (/ (* (get current-solvers puzzle-info) u100) (get max-solvers puzzle-info))
     })
     none))
+
+(define-read-only (get-puzzle-hint
+  (puzzle-id uint)
+  (hint-level uint))
+  (map-get? puzzle-hints { puzzle-id: puzzle-id, hint-level: hint-level }))
+
+(define-read-only (get-user-purchased-hints
+  (puzzle-id uint)
+  (user principal))
+  (map-get? user-hints-purchased { puzzle-id: puzzle-id, user: user }))
+
+(define-read-only (can-access-hint
+  (puzzle-id uint)
+  (hint-level uint)
+  (user principal))
+  (match (map-get? puzzle-hints { puzzle-id: puzzle-id, hint-level: hint-level })
+    hint-info
+      (match (map-get? puzzles puzzle-id)
+        puzzle-info
+          (and
+            (>= (get current-solvers puzzle-info) (get unlock-threshold hint-info))
+            (match (map-get? user-hints-purchased { puzzle-id: puzzle-id, user: user })
+              user-hints (is-some (index-of (get hints-used user-hints) hint-level))
+              false))
+        false)
+    false))
+
+(define-read-only (get-available-hints
+  (puzzle-id uint)
+  (user principal))
+  (let
+    ((puzzle-info (unwrap! (map-get? puzzles puzzle-id) none))
+     (current-solvers (get current-solvers puzzle-info)))
+    (some {
+      hint-1: (and 
+        (is-some (map-get? puzzle-hints { puzzle-id: puzzle-id, hint-level: u1 }))
+        (>= current-solvers (get unlock-threshold (unwrap-panic (map-get? puzzle-hints { puzzle-id: puzzle-id, hint-level: u1 }))))),
+      hint-2: (and 
+        (is-some (map-get? puzzle-hints { puzzle-id: puzzle-id, hint-level: u2 }))
+        (>= current-solvers (get unlock-threshold (unwrap-panic (map-get? puzzle-hints { puzzle-id: puzzle-id, hint-level: u2 }))))),
+      hint-3: (and 
+        (is-some (map-get? puzzle-hints { puzzle-id: puzzle-id, hint-level: u3 }))
+        (>= current-solvers (get unlock-threshold (unwrap-panic (map-get? puzzle-hints { puzzle-id: puzzle-id, hint-level: u3 })))))
+    })))
