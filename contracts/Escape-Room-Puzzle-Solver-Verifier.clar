@@ -61,6 +61,10 @@
   total-spent: uint
 })
 
+(define-map user-created-puzzles principal (list 101 uint))
+
+(define-map user-solved-puzzles principal (list 101 uint))
+
 (define-public (create-puzzle 
   (title (string-ascii 100))
   (description (string-ascii 500))
@@ -71,7 +75,8 @@
   (duration uint))
   (let 
     ((puzzle-id (var-get next-puzzle-id))
-     (current-block burn-block-height))
+     (current-block burn-block-height)
+     (created-list (default-to (list) (map-get? user-created-puzzles tx-sender))))
     (asserts! (>= difficulty u1) err-min-difficulty)
     (asserts! (<= difficulty u10) err-min-difficulty)
     (asserts! (> max-solvers u0) err-max-solvers-reached)
@@ -90,6 +95,7 @@
       active: true
     })
     (map-set puzzle-leaderboard puzzle-id (list))
+    (map-set user-created-puzzles tx-sender (unwrap! (as-max-len? (append created-list puzzle-id) u101) err-max-hints-reached))
     (var-set next-puzzle-id (+ puzzle-id u1))
     (var-set total-puzzles-created (+ (var-get total-puzzles-created) u1))
     (ok puzzle-id)))
@@ -138,7 +144,8 @@
     ((puzzle-info (unwrap! (map-get? puzzles puzzle-id) err-not-found))
      (solution-hash (sha256 (unwrap-panic (to-consensus-buff? solution))))
      (current-block burn-block-height)
-     (nft-id (var-get next-nft-id)))
+     (nft-id (var-get next-nft-id))
+     (solved-list (default-to (list) (map-get? user-solved-puzzles tx-sender))))
     (asserts! (get active puzzle-info) err-puzzle-inactive)
     (asserts! (< current-block (get expires-at puzzle-info)) err-time-expired)
     (asserts! (< (get current-solvers puzzle-info) (get max-solvers puzzle-info)) err-max-solvers-reached)
@@ -150,6 +157,7 @@
       nft-id: nft-id,
       solution: solution
     })
+    (map-set user-solved-puzzles tx-sender (unwrap! (as-max-len? (append solved-list puzzle-id) u101) err-max-hints-reached))
     (map-set puzzles puzzle-id 
       (merge puzzle-info { current-solvers: (+ (get current-solvers puzzle-info) u1) }))
     (update-user-stats tx-sender (get reward-amount puzzle-info) current-block)
@@ -219,6 +227,12 @@
 
 (define-read-only (get-user-stats (user principal))
   (map-get? user-stats user))
+
+(define-read-only (get-user-created-puzzles (user principal))
+  (map-get? user-created-puzzles user))
+
+(define-read-only (get-user-solved-puzzles (user principal))
+  (map-get? user-solved-puzzles user))
 
 (define-read-only (get-puzzle-leaderboard (puzzle-id uint))
   (map-get? puzzle-leaderboard puzzle-id))
