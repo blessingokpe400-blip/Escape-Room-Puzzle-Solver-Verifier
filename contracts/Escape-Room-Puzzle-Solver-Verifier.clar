@@ -14,6 +14,9 @@
 (define-constant err-hint-not-found (err u110))
 (define-constant err-insufficient-payment (err u111))
 (define-constant err-max-hints-reached (err u112))
+(define-constant err-invalid-rating (err u113))
+(define-constant err-not-solver (err u114))
+(define-constant err-already-rated (err u115))
 
 (define-data-var next-puzzle-id uint u1)
 (define-data-var next-nft-id uint u1)
@@ -64,6 +67,17 @@
 (define-map user-created-puzzles principal (list 101 uint))
 
 (define-map user-solved-puzzles principal (list 101 uint))
+
+(define-map puzzle-ratings { puzzle-id: uint, rater: principal } {
+  rating: uint,
+  rated-at: uint
+})
+
+(define-map puzzle-rating-stats uint {
+  total-ratings: uint,
+  sum-ratings: uint,
+  average-rating: uint
+})
 
 (define-public (create-puzzle 
   (title (string-ascii 100))
@@ -191,6 +205,30 @@
   (begin
     (asserts! (is-eq tx-sender sender) err-unauthorized)
     (nft-transfer? escape-room-nft nft-id sender recipient)))
+
+(define-public (rate-puzzle
+  (puzzle-id uint)
+  (rating uint))
+  (let
+    ((puzzle-info (unwrap! (map-get? puzzles puzzle-id) err-not-found))
+     (current-stats (default-to { total-ratings: u0, sum-ratings: u0, average-rating: u0 }
+       (map-get? puzzle-rating-stats puzzle-id)))
+     (new-total (+ (get total-ratings current-stats) u1))
+     (new-sum (+ (get sum-ratings current-stats) rating)))
+    (asserts! (>= rating u1) err-invalid-rating)
+    (asserts! (<= rating u5) err-invalid-rating)
+    (asserts! (is-some (map-get? puzzle-solutions { puzzle-id: puzzle-id, solver: tx-sender })) err-not-solver)
+    (asserts! (is-none (map-get? puzzle-ratings { puzzle-id: puzzle-id, rater: tx-sender })) err-already-rated)
+    (map-set puzzle-ratings { puzzle-id: puzzle-id, rater: tx-sender } {
+      rating: rating,
+      rated-at: burn-block-height
+    })
+    (map-set puzzle-rating-stats puzzle-id {
+      total-ratings: new-total,
+      sum-ratings: new-sum,
+      average-rating: (/ new-sum new-total)
+    })
+    (ok true)))
 
 (define-private (update-user-stats 
   (user principal)
@@ -323,3 +361,16 @@
         (is-some (map-get? puzzle-hints { puzzle-id: puzzle-id, hint-level: u3 }))
         (>= current-solvers (get unlock-threshold (unwrap-panic (map-get? puzzle-hints { puzzle-id: puzzle-id, hint-level: u3 })))))
     })))
+
+(define-read-only (get-puzzle-rating-stats (puzzle-id uint))
+  (map-get? puzzle-rating-stats puzzle-id))
+
+(define-read-only (get-user-puzzle-rating
+  (puzzle-id uint)
+  (user principal))
+  (map-get? puzzle-ratings { puzzle-id: puzzle-id, rater: user }))
+
+(define-read-only (has-rated-puzzle
+  (puzzle-id uint)
+  (user principal))
+  (is-some (map-get? puzzle-ratings { puzzle-id: puzzle-id, rater: user })))
